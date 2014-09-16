@@ -1,0 +1,69 @@
+#!/bin/bash
+
+set -eo pipefail
+shopt -u huponexit
+
+source targets.sh
+
+DOKKU_DEPLOY_USER=${DOKKU_DEPLOY_USER:-dokku}
+
+if [ -z "$DOKKU_DEPLOY_HOST" ]; then
+	echo 'Configure $DOKKU_DEPLOY_HOST' >&2
+	exit 1;
+fi
+
+if [ -z "$DEPLOY_LOG_URL" ]; then
+	echo 'Configure $DEPLOY_LOG_URL' >&2
+	exit 1;
+fi
+
+color_blue() { echo -ne "\e[01;34m$*\e[00m"; }
+color_green() { echo -ne "\e[01;32m$*\e[00m"; }
+color_yellow() { echo -ne "\e[01;33m$*\e[00m"; }
+color_white() { echo -ne "\e[01;37m$*\e[00m"; }
+
+while read oldrev newrev refname
+do
+	if [ -z "${newrev//0/}" ]; then continue; fi
+
+	branch=$(git rev-parse --symbolic --abbrev-ref $refname)
+	commit=$(git rev-list -1 --abbrev-commit $newrev)
+	deploy_log=${DEPLOY_LOG_URL//'%commit%'/$commit}
+	deploy_url="http://${branch}.${DEPLOY_DOKKU_HOST}"
+	remote_name="deploy-${branch}"
+	email=$(git --no-pager show -s --format='%ae' $newrev)
+	author=$(git --no-pager show -s --format='%an' $newrev)
+
+	if [ $(git remote | grep -c "^${remote_name}$" ) -eq 0 ]; then
+		git remote add "${remote_name}" "${DOKKU_DEPLOY_USER}@${DEPLOY_DOKKU_HOST}:${branch}"
+	fi
+
+	echo "Deploying in ${branch} the background, ${author} <${email}> will be notified, thanks!"
+
+	(
+		(
+			echo "$(color_white Author)     : $(color_green $author '<'${email}'>')"
+			echo "$(color_white Deployer)   : $(color_green $NAME)"
+			echo "$(color_white Branch)     : $(color_yellow $branch)"
+			echo "$(color_white Date)       : $(date)"
+			echo "$(color_white Commit)     : $(git log --format=%B -n 1 $newrev | grep -v '^\s*$' | sed '2,$ s/^/             /')"
+			echo "$(color_white Deploy URL) : $(color_blue $deploy_url)"
+			echo
+			echo "$ git push --force deploy ${commit}:master"
+			git push --force ${remote_name} ${newrev}:master 2>&1 || :
+
+
+		) | curl -s --data-binary @- ${deploy_log}
+
+		if [ -n "$IRC_NOTIFY_URL" ]; then
+			curl -s -d "$author deployed ${branch}: ${deploy_log}" "$IRC_NOTIFY_URL"
+		fi
+
+		if [ -f "message.template" ]; then
+			sed -e s_%branch%_"${branch}"_ -e s_%deploy_log%_"${deploy_log}"_ -e s_%deploy_url%_"${deploy_url}"_ "message.template" | \
+			mail -s "Deployment of $branch" "$email"
+		fi
+
+	) 1>&- 2>&-  &
+
+done

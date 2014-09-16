@@ -1,0 +1,10 @@
+#!/bin/bash
+
+while read oldrev newrev refname
+do
+	branch=${refname:11}
+	if [[ "$branch" =~ [^a-z0-9-] ]]; then
+		echo "${branch} is not a valid hostname: only letters, numbers and a hyphen allowed";
+		exit 1;
+	fi
+done
